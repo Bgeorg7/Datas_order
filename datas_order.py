@@ -1,70 +1,107 @@
+import streamlit as st
 import pandas as pd
+import io
 
-# 1. Cargar la base de datos principal
-# CORRECCIÓN: Se usa read_excel, no read_xlsx
+st.set_page_config(page_title="Panel Logística ENEUN", layout="wide")
+
+st.title("Panel de Control Logístico y Censos")
+
 try:
     df = pd.read_excel('Datos-Sabado-Noche.xlsx')
 except Exception as e:
-    print(f"Error al leer el archivo. Asegúrate de tener instalada la librería 'openpyxl' (pip install openpyxl). Error: {e}")
-    exit()
+    st.error(f"Error al cargar el archivo: {e}")
+    st.stop()
 
-# Nombres de columnas clave
-COL_SEDE = 'university'
-COL_ALIMENTACION = 'dietary_preference'
-COL_DOC_TIPO = 'document_type'
+df['Es_Mayor'] = df['document_type'].apply(lambda x: 'Mayor de Edad' if str(x).strip().upper() == 'CC' else 'Menor de Edad')
 
-# 2. Preparar el motor para escribir un Excel con varias hojas
-ruta_salida = 'Reportes_Logistica_ENEUN.xlsx'
-writer = pd.ExcelWriter(ruta_salida, engine='xlsxwriter')
+def extraer_campamento(respuesta):
+    texto = str(respuesta).lower()
+    if 'campamento' in texto and ('sí' in texto or 'si' in texto or 'true' in texto):
+        return 'Acampa'
+    return 'No Acampa'
 
-# --- REPORTE 1: CONFIRMACIONES ---
-# CORRECCIÓN: Agregamos .copy() para evitar la advertencia de Pandas
-df_confirmados = df[df['confirm_submitted_at'].notna()].copy()
+def extraer_direccion(respuesta):
+    texto = str(respuesta).lower()
+    if 'direccion' in texto or 'dirección' in texto:
+        return str(respuesta)
+    return 'No especifica'
 
-conf_sede = df_confirmados[COL_SEDE].value_counts().reset_index()
-conf_sede.columns = ['Sede', 'Total Confirmados']
+df['Campamento'] = df['answers'].apply(extraer_campamento)
+df['Direccion_Hospedaje'] = df['answers'].apply(extraer_direccion)
 
-# Agregar fila de Total Nacional
-total_nacional = pd.DataFrame([{'Sede': 'TOTAL NACIONAL', 'Total Confirmados': conf_sede['Total Confirmados'].sum()}])
-conf_final = pd.concat([conf_sede, total_nacional], ignore_index=True)
-conf_final.to_excel(writer, sheet_name='1_Confirmaciones', index=False)
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "Confirmaciones", 
+    "Campamento y Hospedaje", 
+    "Alimentación", 
+    "Mayoría de Edad", 
+    "Representantes", 
+    "Condiciones Médicas",
+    "Exportar Excel"
+])
 
-# --- REPORTE 2: TIPO DE ALIMENTACION ---
-alim_cruzado = pd.crosstab(df_confirmados[COL_SEDE], df_confirmados[COL_ALIMENTACION], margins=True, margins_name='TOTAL NACIONAL')
-alim_cruzado.reset_index(inplace=True)
-alim_cruzado.to_excel(writer, sheet_name='2_Alimentacion', index=False)
+with tab1:
+    st.subheader("Confirmaciones por Sede")
+    df_confirmados = df[df['confirm_submitted_at'].notna()]
+    conf_sede = df_confirmados['university'].value_counts().reset_index()
+    conf_sede.columns = ['Sede', 'Total Confirmados']
+    st.dataframe(conf_sede, use_container_width=True)
+    st.metric("Total Nacional Confirmados", len(df_confirmados))
 
-# --- REPORTE 3: MAYORIA DE EDAD (CENSO) ---
-df_confirmados['Es_Mayor'] = df_confirmados[COL_DOC_TIPO].apply(lambda x: 'Mayor de Edad (CC)' if str(x).upper() == 'CC' else 'Menor de Edad / Otro')
-edad_cruzado = pd.crosstab(df_confirmados[COL_SEDE], df_confirmados['Es_Mayor'], margins=True, margins_name='TOTAL NACIONAL')
-edad_cruzado.reset_index(inplace=True)
-edad_cruzado.to_excel(writer, sheet_name='3_Mayoria_Edad', index=False)
-
-# --- REPORTE 4: REPRESENTANTES ---
-# Manejo seguro en caso de que is_representative tenga valores nulos o texto en vez de booleanos
-df_repres = df_confirmados[df_confirmados['is_representative'].isin([True, 'Sí', 'Si', 'TRUE', 1])]
-
-repres_sede = df_repres[COL_SEDE].value_counts().reset_index()
-repres_sede.columns = ['Sede', 'Total Representantes']
-
-if not repres_sede.empty:
-    total_rep = pd.DataFrame([{'Sede': 'TOTAL NACIONAL', 'Total Representantes': repres_sede['Total Representantes'].sum()}])
-    repres_final = pd.concat([repres_sede, total_rep], ignore_index=True)
-    repres_final.to_excel(writer, sheet_name='4_Representantes', index=False)
+with tab2:
+    st.subheader("Censo de Campamento")
+    camp_sede = pd.crosstab(df['university'], df['Campamento'], margins=True, margins_name='TOTAL NACIONAL')
+    st.dataframe(camp_sede, use_container_width=True)
     
-    # Lista detallada
-    cols_repres = [c for c in ['first_name', 'last_name', COL_SEDE, 'representative_bodies', 'cuerpo_colegiado'] if c in df_repres.columns]
-    df_repres[cols_repres].to_excel(writer, sheet_name='4_Detalle_Repres', index=False)
+    st.subheader("Direcciones de No Acampantes")
+    df_no_acampa = df[df['Campamento'] == 'No Acampa'][['first_name', 'last_name', 'university', 'phone', 'Direccion_Hospedaje']]
+    st.dataframe(df_no_acampa, use_container_width=True)
 
-# --- REPORTE 5: CONDICIONES MEDICAS ---
-df_medico = df_confirmados[df_confirmados['has_disability'].isin([True, 'Sí', 'Si']) | df_confirmados['allergies'].isin([True, 'Sí', 'Si'])]
+with tab3:
+    st.subheader("Tipos de Alimentación")
+    alim_sede = pd.crosstab(df['university'], df['dietary_preference'], margins=True, margins_name='TOTAL NACIONAL')
+    st.dataframe(alim_sede, use_container_width=True)
 
-cols_medico = [c for c in ['first_name', 'last_name', COL_SEDE, 'has_disability', 'disability_specify', 'allergies', 'allergy_specify'] if c in df_medico.columns]
-if not df_medico.empty:
-    df_medico_detalle = df_medico[cols_medico]
-    df_medico_detalle.to_excel(writer, sheet_name='5_Condiciones_Medicas', index=False)
+with tab4:
+    st.subheader("Censo de Mayoría de Edad")
+    edad_sede = pd.crosstab(df['university'], df['Es_Mayor'], margins=True, margins_name='TOTAL NACIONAL')
+    st.dataframe(edad_sede, use_container_width=True)
 
-# Guardar y cerrar el archivo Excel
-writer.close()
+with tab5:
+    st.subheader("Censo de Representantes")
+    df_repres = df[df['is_representative'] == True]
+    rep_sede = df_repres['university'].value_counts().reset_index()
+    rep_sede.columns = ['Sede', 'Total Representantes']
+    st.dataframe(rep_sede, use_container_width=True)
+    st.metric("Total Nacional Representantes", len(df_repres))
 
-print(f"¡Proceso terminado exitosamente! Revisa el archivo: {ruta_salida}")
+with tab6:
+    st.subheader("Condiciones Médicas y Alergias")
+    df_medico = df[(df['has_disability'] == True) | (df['allergies'] == True)]
+    medico_sede = df_medico['university'].value_counts().reset_index()
+    medico_sede.columns = ['Sede', 'Total Casos Médicos']
+    st.dataframe(medico_sede, use_container_width=True)
+    st.metric("Total Nacional Casos Médicos", len(df_medico))
+    
+    st.write("Detalle:")
+    st.dataframe(df_medico[['first_name', 'last_name', 'university', 'has_disability', 'disability_specify', 'allergies', 'allergy_specify']], use_container_width=True)
+
+with tab7:
+    st.subheader("Generar Archivo Organizado")
+    st.write("Presiona el botón para descargar todas estas tablas organizadas en un solo archivo de Excel.")
+    
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        conf_sede.to_excel(writer, sheet_name='Confirmaciones', index=False)
+        camp_sede.to_excel(writer, sheet_name='Campamento')
+        df_no_acampa.to_excel(writer, sheet_name='Direcciones', index=False)
+        alim_sede.to_excel(writer, sheet_name='Alimentacion')
+        edad_sede.to_excel(writer, sheet_name='Mayoria_Edad')
+        rep_sede.to_excel(writer, sheet_name='Representantes', index=False)
+        df_medico[['first_name', 'last_name', 'university', 'has_disability', 'disability_specify', 'allergies', 'allergy_specify']].to_excel(writer, sheet_name='Condiciones_Medicas', index=False)
+    
+    st.download_button(
+        label="Descargar Reporte Excel",
+        data=buffer.getvalue(),
+        file_name="Reporte_Logistica_Completo.xlsx",
+        mime="application/vnd.ms-excel"
+    )
